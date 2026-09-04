@@ -1,4 +1,5 @@
 import os
+import io
 import hashlib
 import json
 import re
@@ -7,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Any, Dict
 
+from PIL import Image
 import google.generativeai as genai
 import mysql.connector
 from mysql.connector import pooling
@@ -19,7 +21,7 @@ from pydantic import BaseModel
 # Configure Gemini AI
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY.strip())
 
 # Aiven MySQL Connection Pool Configuration
 DB_HOST = os.getenv("DB_HOST")
@@ -623,23 +625,19 @@ def export_csv(username: str):
         headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
     )
 
-# Gemini Receipt Scanner
+# Gemini Receipt Scanner (Uses PIL.Image for native SDK compatibility)
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured in Render.")
-    
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY environment variable is not configured in Render."
+        )
+
     try:
         contents = await file.read()
-        mime_type = file.content_type or "image/jpeg"
-
-        # Correct Gemini inline_data dictionary structure
-        image_part = {
-            "inline_data": {
-                "mime_type": mime_type,
-                "data": contents
-            }
-        }
+        image = Image.open(io.BytesIO(contents))
 
         prompt = (
             "Analyze this receipt image carefully. Extract the transaction date, total amount, category, and a short description. "
@@ -648,11 +646,11 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             "\"date\" (string in YYYY-MM-DD format), "
             "\"desc\" (short name of vendor or item), "
             "\"cat\" (must be one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other). "
-            "Do not include Markdown backticks, explanation, or code blocks."
+            "Do not include Markdown backticks or extra text."
         )
 
         model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content([image_part, prompt])
+        response = model.generate_content([image, prompt])
         raw_text = response.text.strip()
 
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
