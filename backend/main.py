@@ -1,5 +1,5 @@
 import os
-import io
+import base64
 import hashlib
 import json
 import re
@@ -8,8 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Any, Dict
 
-from PIL import Image
-import google.generativeai as genai
+import httpx
 import mysql.connector
 from mysql.connector import pooling
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks, UploadFile, File
@@ -318,7 +317,7 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
     expires_at = datetime.utcnow() + timedelta(minutes=15)
     
     cursor.execute(
-        "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s)",
+        "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)",
         (payload.email, token, expires_at)
     )
     conn.commit()
@@ -620,43 +619,22 @@ def export_csv(username: str):
         headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
     )
 
-# Gemini Receipt Scanner (Dynamic Model Discovery)
+# Direct REST Gemini Receipt Scanner
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
     raw_key = os.getenv("GEMINI_API_KEY", "")
     clean_key = raw_key.strip().strip('"').strip("'")
-    
+
     if not clean_key:
         raise HTTPException(
             status_code=500,
-            detail="GEMINI_API_KEY environment variable is missing on Render."
+            detail="GEMINI_API_KEY environment variable is not configured on Render."
         )
 
     try:
-        genai.configure(api_key=clean_key)
         contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
-
-        # Query all models available to this API key to avoid 404 version mismatch
-        supported_models = []
-        try:
-            for m in genai.list_models():
-                if "generateContent" in m.supported_generation_methods:
-                    supported_models.append(m.name)
-        except Exception as e:
-            print(f"Could not list models: {e}")
-
-        # Choose the best matching vision model supported by your key
-        selected_model = "gemini-1.5-flash"
-        if supported_models:
-            preferred = [
-                "models/gemini-1.5-flash",
-                "models/gemini-1.5-flash-latest",
-                "models/gemini-1.5-pro",
-                "models/gemini-pro-vision"
-            ]
-            matched = [p for p in preferred if p in supported_models]
-            selected_model = matched[0] if matched else supported_models[0]
+        mime_type = file.content_type or "image/jpeg"
+        base64_data = base64.b64encode(contents).decode("utf-8")
 
         prompt = (
             "Analyze this receipt image carefully. Extract the transaction date, total amount, category, and a short description. "
@@ -665,13 +643,35 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             "\"date\" (string in YYYY-MM-DD format), "
             "\"desc\" (short name of vendor or item), "
             "\"cat\" (must be one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other). "
-            "Do not include Markdown backticks or extra text."
+            "Do not include Markdown formatting, backticks, or explanation."
         )
 
-        model = genai.GenerativeModel(selected_model)
-        response = model.generate_content([image, prompt])
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": mime_type, "data": base64_data}},
+                    {"text": prompt}
+                ]
+            }]
+        }
 
-        raw_text = response.text.strip()
+        # Query the official Google Generative Language v1 REST endpoint directly
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={clean_key}"
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(url, json=payload)
+            data = resp.json()
+
+        if resp.status_code != 200:
+            err_msg = data.get("error", {}).get("message", resp.text)
+            raise HTTPException(status_code=500, detail=f"Gemini API Error: {err_msg}")
+
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return {"amount": 0.0, "desc": "Receipt", "cat": "Food", "date": str(date.today())}
+
+        raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
+
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         if match:
             parsed = json.loads(match.group(0))
@@ -684,6 +684,8 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
 
         return {"amount": 0.0, "desc": "Receipt", "cat": "Food", "date": str(date.today())}
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Receipt Scan Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI Scan Error: {str(e)}")
