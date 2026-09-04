@@ -54,11 +54,15 @@ def get_db_connection():
             detail=f"Database connection error: {str(e)}"
         )
 
-# Email Setup (FastAPI-Mail via SMTP)
+# Clean and normalize email credentials
+raw_mail_user = os.getenv("MAIL_USERNAME", "").strip().strip('"').strip("'")
+raw_mail_pass = os.getenv("MAIL_PASSWORD", "").strip().strip('"').strip("'").replace(" ", "")
+raw_mail_from = os.getenv("MAIL_FROM", "").strip().strip('"').strip("'") or raw_mail_user
+
 mail_config = ConnectionConfig(
-    MAIL_USERNAME=os.getenv("MAIL_USERNAME", ""),
-    MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", ""),
-    MAIL_FROM=os.getenv("MAIL_FROM", os.getenv("MAIL_USERNAME", "noreply@expensetracker.com")),
+    MAIL_USERNAME=raw_mail_user,
+    MAIL_PASSWORD=raw_mail_pass,
+    MAIL_FROM=raw_mail_from,
     MAIL_PORT=587,
     MAIL_SERVER="smtp.gmail.com",
     MAIL_STARTTLS=True,
@@ -67,35 +71,45 @@ mail_config = ConnectionConfig(
 )
 
 async def send_welcome_email(recipient_email: str, username: str):
-    if not os.getenv("MAIL_USERNAME") or not os.getenv("MAIL_PASSWORD"):
+    if not raw_mail_user or not raw_mail_pass:
+        print("EMAIL CONFIG ERROR: MAIL_USERNAME or MAIL_PASSWORD missing in environment.")
         return
-    message = MessageSchema(
-        subject="Welcome to Expense Tracker!",
-        recipients=[recipient_email],
-        body=f"Hi {username},\n\nYour account has been created successfully!\n\nBest regards,\nExpense Tracker Team",
-        subtype=MessageType.plain
-    )
-    fm = FastMail(mail_config)
-    await fm.send_message(message)
+    try:
+        message = MessageSchema(
+            subject="Welcome to Expense Tracker!",
+            recipients=[recipient_email],
+            body=f"Hi {username},\n\nYour account has been created successfully!\n\nBest regards,\nExpense Tracker Team",
+            subtype=MessageType.plain
+        )
+        fm = FastMail(mail_config)
+        await fm.send_message(message)
+        print(f"EMAIL SUCCESS: Welcome message sent to {recipient_email}")
+    except Exception as e:
+        print(f"EMAIL SEND FAILED: {type(e).__name__} - {str(e)}")
 
 async def send_reset_email(recipient_email: str, token: str):
-    if not os.getenv("MAIL_USERNAME") or not os.getenv("MAIL_PASSWORD"):
+    if not raw_mail_user or not raw_mail_pass:
+        print("EMAIL CONFIG ERROR: MAIL_USERNAME or MAIL_PASSWORD missing in environment.")
         return
-    reset_link = f"https://expense-tracker-frontend-qnr6.onrender.com?token={token}"
-    message = MessageSchema(
-        subject="Password Reset - Expense Tracker",
-        recipients=[recipient_email],
-        body=(
-            f"Hello,\n\n"
-            f"You requested a password reset for your Expense Tracker account.\n"
-            f"Click the link below to set a new password:\n\n"
-            f"{reset_link}\n\n"
-            f"This link expires in 15 minutes. If you did not make this request, you can safely ignore this email.\n"
-        ),
-        subtype=MessageType.plain
-    )
-    fm = FastMail(mail_config)
-    await fm.send_message(message)
+    try:
+        reset_link = f"https://expense-tracker-frontend-qnr6.onrender.com?token={token}"
+        message = MessageSchema(
+            subject="Password Reset - Expense Tracker",
+            recipients=[recipient_email],
+            body=(
+                f"Hello,\n\n"
+                f"You requested a password reset for your Expense Tracker account.\n"
+                f"Click the link below to set a new password:\n\n"
+                f"{reset_link}\n\n"
+                f"This link expires in 15 minutes. If you did not make this request, you can safely ignore this email.\n"
+            ),
+            subtype=MessageType.plain
+        )
+        fm = FastMail(mail_config)
+        await fm.send_message(message)
+        print(f"EMAIL SUCCESS: Password reset link sent to {recipient_email}")
+    except Exception as e:
+        print(f"EMAIL SEND FAILED: {type(e).__name__} - {str(e)}")
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
