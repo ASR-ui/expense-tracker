@@ -1,5 +1,7 @@
 import os
 import hashlib
+import json
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -136,7 +138,6 @@ def init_db():
             """
         )
 
-        # Ensure schema migrations run smoothly
         for col_sql in [
             "ALTER TABLE expenses ADD COLUMN user_id INT",
             "ALTER TABLE expenses ADD COLUMN type VARCHAR(20) DEFAULT 'expense'",
@@ -368,8 +369,8 @@ def get_user_entries(username: str):
         SELECT 
             e.id, 
             e.title, 
-            e.category AS cat,
-            e.category AS category,
+            COALESCE(e.category, 'Other') AS cat,
+            COALESCE(e.category, 'Other') AS category,
             COALESCE(e.notes, e.title, '') AS `desc`,
             COALESCE(e.notes, e.title, '') AS description,
             CAST(e.amount AS FLOAT) AS amount, 
@@ -401,7 +402,7 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
     
     user_id = user["id"]
     desc = payload.get("desc") or payload.get("description") or payload.get("title") or "Transaction"
-    cat = payload.get("cat") or payload.get("category") or "General"
+    cat = payload.get("cat") or payload.get("category") or "Other"
     amount = float(payload.get("amount", 0.0))
     entry_date = payload.get("date") or str(date.today())
     entry_type = (payload.get("type") or "expense").lower()
@@ -444,7 +445,7 @@ def delete_user_entry(username: str, entry_id: int):
     conn.close()
     return {"message": "Entry deleted"}
 
-# Budgets Endpoints (Returns a dictionary {"Food": 5000})
+# Budgets Endpoints
 @app.get("/budgets/{username}")
 def get_user_budgets(username: str):
     conn = get_db_connection()
@@ -639,7 +640,6 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             {"mime_type": file.content_type or "image/jpeg", "data": contents},
             prompt
         ])
-        import json, re
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if match:
             return json.loads(match.group(0))
