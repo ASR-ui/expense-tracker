@@ -311,7 +311,7 @@ def delete_account(username: str):
 
 # Password Reset Flow
 @app.post("/forgot-password")
-async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+async def forgot_password(payload: ForgotPasswordRequest):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     
@@ -343,7 +343,15 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
     cursor.close()
     conn.close()
     
-    background_tasks.add_task(send_reset_email, user_email, token)
+    # Send directly here so any SMTP error shows up in Render logs immediately
+    try:
+        print(f"Attempting to send password reset email to {user_email}...")
+        await send_reset_email(user_email, token)
+        print("Password reset email function executed successfully.")
+    except Exception as e:
+        print(f"CRITICAL SMTP ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
     return {"message": "Reset link sent directly to your registered email address."}
 
 @app.post("/reset-password")
