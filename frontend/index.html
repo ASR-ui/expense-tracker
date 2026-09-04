@@ -768,7 +768,7 @@
               });
               const data = await res.json();
               if(res.ok) {
-                  alert("Password successfully reset! Please log in with your new credentials.");
+                  alert(data.message || "Password successfully reset! Please log in with your new credentials.");
                   window.location.href = window.location.pathname;
               } else {
                   errEl.textContent = data.detail || 'Failed to reset password.';
@@ -860,7 +860,7 @@
       });
       const data = await res.json();
       if (res.ok) {
-        alert("A password reset link has been sent directly to the email registered with this username!");
+        alert(data.message || "A password reset link has been sent directly to your registered email!");
       } else {
         alert(data.detail || "Account not found.");
       }
