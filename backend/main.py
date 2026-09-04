@@ -10,7 +10,7 @@ from mysql.connector import pooling
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 app = FastAPI(title="Expense Tracker API")
 
@@ -157,6 +157,19 @@ def setup_database():
         """
     )
 
+    # Budgets Table
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS budgets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            category VARCHAR(100) NOT NULL,
+            monthly_limit DECIMAL(10, 2) NOT NULL,
+            UNIQUE KEY unique_user_category (user_id, category)
+        )
+        """
+    )
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -187,9 +200,15 @@ class ExpenseCreate(BaseModel):
     category: str
     date: date
     notes: Optional[str] = None
+    username: Optional[str] = None
 
-class ExpenseResponse(ExpenseCreate):
+class ExpenseResponse(BaseModel):
     id: int
+    title: str
+    amount: float
+    category: str
+    date: date
+    notes: Optional[str] = None
 
 class ReceiptAnalysisRequest(BaseModel):
     receipt_text: str
@@ -225,9 +244,7 @@ def signup(user: UserSignup, background_tasks: BackgroundTasks):
     cursor.close()
     conn.close()
 
-    # Send confirmation email in the background so request finishes immediately
     background_tasks.add_task(send_welcome_email, user.email, user.username)
-
     return {"message": "Account created successfully", "user_id": user_id, "username": user.username}
 
 @app.post("/login")
@@ -305,7 +322,73 @@ def reset_password(payload: ResetPasswordRequest):
     
     return {"message": "Password successfully reset! Please log in with your new credentials."}
 
-# Expense Endpoints
+# User-Specific Data Endpoints (Dashboard & Ledger)
+@app.get("/expenses/{username}", response_model=List[ExpenseResponse])
+def get_user_expenses(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT e.id, e.title, e.amount, e.category, e.date, e.notes 
+        FROM expenses e
+        JOIN users u ON e.user_id = u.id
+        WHERE u.username = %s
+        ORDER BY e.date DESC
+        """,
+        (username,)
+    )
+    expenses = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return expenses
+
+@app.get("/budgets/{username}")
+def get_user_budgets(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT b.category, b.monthly_limit
+        FROM budgets b
+        JOIN users u ON b.user_id = u.id
+        WHERE u.username = %s
+        """,
+        (username,)
+    )
+    budgets = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return budgets
+
+@app.post("/budgets/{username}")
+def save_user_budget(username: str, payload: dict):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+    if not user:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = user["id"]
+    category = payload.get("category")
+    monthly_limit = payload.get("monthly_limit")
+
+    cursor.execute(
+        """
+        INSERT INTO budgets (user_id, category, monthly_limit)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE monthly_limit = %s
+        """,
+        (user_id, category, monthly_limit, monthly_limit)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"message": "Budget saved successfully"}
+
+# General Expense Endpoints
 @app.get("/expenses", response_model=List[ExpenseResponse])
 def list_expenses():
     conn = get_db_connection()
@@ -319,16 +402,30 @@ def list_expenses():
 @app.post("/expenses", response_model=ExpenseResponse, status_code=status.HTTP_201_CREATED)
 def create_expense(expense: ExpenseCreate):
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
+    user_id = None
+    if expense.username:
+        cursor.execute("SELECT id FROM users WHERE username = %s", (expense.username,))
+        user = cursor.fetchone()
+        if user:
+            user_id = user["id"]
+
     cursor.execute(
-        "INSERT INTO expenses (title, amount, category, date, notes) VALUES (%s, %s, %s, %s, %s)",
-        (expense.title, expense.amount, expense.category, expense.date, expense.notes)
+        "INSERT INTO expenses (user_id, title, amount, category, date, notes) VALUES (%s, %s, %s, %s, %s, %s)",
+        (user_id, expense.title, expense.amount, expense.category, expense.date, expense.notes)
     )
     conn.commit()
     expense_id = cursor.lastrowid
     cursor.close()
     conn.close()
-    return {**expense.dict(), "id": expense_id}
+    return {
+        "id": expense_id,
+        "title": expense.title,
+        "amount": expense.amount,
+        "category": expense.category,
+        "date": expense.date,
+        "notes": expense.notes
+    }
 
 @app.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_expense(expense_id: int):
