@@ -8,8 +8,9 @@ from typing import List, Optional, Any, Dict
 import google.generativeai as genai
 import mysql.connector
 from mysql.connector import pooling
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from pydantic import BaseModel
 
@@ -114,7 +115,8 @@ def init_db():
                 email VARCHAR(255) UNIQUE NOT NULL,
                 phone_number VARCHAR(20),
                 username VARCHAR(100) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL
+                password VARCHAR(255) NOT NULL,
+                is_premium BOOLEAN DEFAULT FALSE
             )
             """
         )
@@ -129,14 +131,16 @@ def init_db():
                 category VARCHAR(100) NOT NULL,
                 date DATE NOT NULL,
                 notes TEXT,
-                type VARCHAR(20) DEFAULT 'Expense'
+                type VARCHAR(20) DEFAULT 'expense'
             )
             """
         )
 
+        # Ensure schema migrations run smoothly
         for col_sql in [
             "ALTER TABLE expenses ADD COLUMN user_id INT",
-            "ALTER TABLE expenses ADD COLUMN type VARCHAR(20) DEFAULT 'Expense'"
+            "ALTER TABLE expenses ADD COLUMN type VARCHAR(20) DEFAULT 'expense'",
+            "ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE"
         ]:
             try:
                 cursor.execute(col_sql)
@@ -167,6 +171,20 @@ def init_db():
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS investments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                asset_name VARCHAR(150) NOT NULL,
+                asset_type VARCHAR(100) NOT NULL,
+                invested_amount DECIMAL(12, 2) NOT NULL,
+                current_value DECIMAL(12, 2) NOT NULL,
+                date DATE NOT NULL
+            )
+            """
+        )
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -192,10 +210,10 @@ app.add_middleware(
 
 # Schemas
 class UserSignup(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
     email: str
-    phone_number: Optional[str] = None
+    phone: Optional[str] = None
     username: str
     password: str
 
@@ -209,17 +227,6 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
-
-class ExpenseCreate(BaseModel):
-    title: str
-    amount: float
-    category: str
-    date: date
-    notes: Optional[str] = None
-    username: Optional[str] = None
-
-class ReceiptAnalysisRequest(BaseModel):
-    receipt_text: str
 
 # Health Check
 @app.get("/")
@@ -245,7 +252,7 @@ def signup(user: UserSignup, background_tasks: BackgroundTasks):
         INSERT INTO users (first_name, last_name, email, phone_number, username, password)
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (user.first_name, user.last_name, user.email, user.phone_number, user.username, hashed_pw)
+        (user.firstName, user.lastName, user.email, user.phone, user.username, hashed_pw)
     )
     conn.commit()
     user_id = cursor.lastrowid
@@ -273,6 +280,27 @@ def login(creds: UserLogin):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     return {"message": "Login successful", "user": user}
+
+@app.delete("/users/{username}")
+def delete_account(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+    if not user:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    uid = user["id"]
+    cursor.execute("DELETE FROM expenses WHERE user_id = %s", (uid,))
+    cursor.execute("DELETE FROM budgets WHERE user_id = %s", (uid,))
+    cursor.execute("DELETE FROM investments WHERE user_id = %s", (uid,))
+    cursor.execute("DELETE FROM users WHERE id = %s", (uid,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"message": "Account and all data deleted"}
 
 # Password Reset Flow
 @app.post("/forgot-password")
@@ -340,14 +368,13 @@ def get_user_entries(username: str):
         SELECT 
             e.id, 
             e.title, 
-            COALESCE(e.notes, e.title, 'Transaction') AS description,
-            COALESCE(e.notes, e.title, 'Transaction') AS `desc`,
+            e.category AS cat,
+            e.category AS category,
+            COALESCE(e.notes, e.title, '') AS `desc`,
+            COALESCE(e.notes, e.title, '') AS description,
             CAST(e.amount AS FLOAT) AS amount, 
-            e.category, 
             DATE_FORMAT(e.date, '%Y-%m-%d') AS date, 
-            e.notes,
-            COALESCE(e.type, 'Expense') AS type,
-            COALESCE(e.type, 'Expense') AS entry_type
+            LOWER(COALESCE(e.type, 'expense')) AS type
         FROM expenses e
         JOIN users u ON e.user_id = u.id
         WHERE u.username = %s
@@ -373,19 +400,18 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
         raise HTTPException(status_code=404, detail="User not found")
     
     user_id = user["id"]
-    title = payload.get("title") or payload.get("description") or payload.get("desc") or "Transaction"
+    desc = payload.get("desc") or payload.get("description") or payload.get("title") or "Transaction"
+    cat = payload.get("cat") or payload.get("category") or "General"
     amount = float(payload.get("amount", 0.0))
-    category = payload.get("category", "General")
     entry_date = payload.get("date") or str(date.today())
-    notes = payload.get("notes") or payload.get("description") or payload.get("desc") or ""
-    entry_type = payload.get("type") or payload.get("entry_type") or "Expense"
+    entry_type = (payload.get("type") or "expense").lower()
 
     cursor.execute(
         """
         INSERT INTO expenses (user_id, title, amount, category, date, notes, type)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (user_id, title, amount, category, entry_date, notes, entry_type)
+        (user_id, desc, amount, cat, entry_date, desc, entry_type)
     )
     conn.commit()
     entry_id = cursor.lastrowid
@@ -394,48 +420,31 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
 
     return {
         "id": entry_id,
-        "title": title,
-        "description": notes,
-        "desc": notes,
+        "desc": desc,
+        "cat": cat,
         "amount": amount,
-        "category": category,
         "date": str(entry_date),
-        "notes": notes,
-        "type": entry_type,
-        "entry_type": entry_type
+        "type": entry_type
     }
 
-# Insights Endpoint
-@app.get("/insights/{username}")
-def get_user_insights(username: str):
+@app.delete("/entries/{username}/{entry_id}")
+def delete_user_entry(username: str, entry_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT 
-            COALESCE(SUM(CASE WHEN type = 'Income' THEN amount ELSE 0 END), 0) AS total_income,
-            COALESCE(SUM(CASE WHEN type = 'Expense' OR type IS NULL THEN amount ELSE 0 END), 0) AS total_expense
-        FROM expenses e
-        JOIN users u ON e.user_id = u.id
-        WHERE u.username = %s
+        DELETE e FROM expenses e 
+        JOIN users u ON e.user_id = u.id 
+        WHERE u.username = %s AND e.id = %s
         """,
-        (username,)
+        (username, entry_id)
     )
-    totals = cursor.fetchone() or {"total_income": 0, "total_expense": 0}
+    conn.commit()
     cursor.close()
     conn.close()
+    return {"message": "Entry deleted"}
 
-    total_income = float(totals["total_income"])
-    total_expense = float(totals["total_expense"])
-
-    return {
-        "total_income": total_income,
-        "total_expense": total_expense,
-        "net_savings": total_income - total_expense,
-        "summary": "Monthly balance in sync."
-    }
-
-# Budgets Endpoints
+# Budgets Endpoints (Returns a dictionary {"Food": 5000})
 @app.get("/budgets/{username}")
 def get_user_budgets(username: str):
     conn = get_db_connection()
@@ -449,10 +458,12 @@ def get_user_budgets(username: str):
         """,
         (username,)
     )
-    budgets = cursor.fetchall()
+    rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    return budgets
+    
+    budgets_dict = {r["category"]: r["monthly_limit"] for r in rows}
+    return budgets_dict
 
 @app.post("/budgets/{username}")
 def save_user_budget(username: str, payload: dict):
@@ -482,46 +493,156 @@ def save_user_budget(username: str, payload: dict):
     conn.close()
     return {"message": "Budget saved successfully"}
 
-# Investments Endpoints
+@app.delete("/budgets/{username}/{category}")
+def delete_user_budget(username: str, category: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        DELETE b FROM budgets b
+        JOIN users u ON b.user_id = u.id
+        WHERE u.username = %s AND b.category = %s
+        """,
+        (username, category)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"message": "Budget limit removed"}
+
+# Wealth / Investments Endpoints
 @app.get("/investments/{username}")
 def get_user_investments(username: str):
-    return []
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT i.id, i.asset_name, i.asset_type, 
+               CAST(i.invested_amount AS FLOAT) as invested_amount,
+               CAST(i.current_value AS FLOAT) as current_value,
+               DATE_FORMAT(i.date, '%Y-%m-%d') as date
+        FROM investments i
+        JOIN users u ON i.user_id = u.id
+        WHERE u.username = %s
+        ORDER BY i.date DESC
+        """,
+        (username,)
+    )
+    investments = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return investments
 
 @app.post("/investments/{username}")
 def save_user_investment(username: str, payload: dict):
-    return {"message": "Investment saved successfully"}
-
-# Compatibility Routes
-@app.get("/expenses/{username}")
-def get_user_expenses(username: str):
-    return get_user_entries(username)
-
-@app.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_expense(expense_id: int):
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM expenses WHERE id = %s", (expense_id,))
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+    if not user:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    cursor.execute(
+        """
+        INSERT INTO investments (user_id, asset_name, asset_type, invested_amount, current_value, date)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            user["id"],
+            payload.get("asset_name"),
+            payload.get("asset_type"),
+            float(payload.get("invested_amount", 0.0)),
+            float(payload.get("current_value", 0.0)),
+            payload.get("date") or str(date.today())
+        )
+    )
     conn.commit()
-    deleted = cursor.rowcount
+    inv_id = cursor.lastrowid
     cursor.close()
     conn.close()
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail="Expense not found")
-    return None
+    return {"id": inv_id, "message": "Investment saved"}
 
-# AI Receipt Analysis
-@app.post("/analyze-receipt")
-def analyze_receipt(payload: ReceiptAnalysisRequest):
+@app.delete("/investments/{username}/{inv_id}")
+def delete_user_investment(username: str, inv_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        DELETE i FROM investments i
+        JOIN users u ON i.user_id = u.id
+        WHERE u.username = %s AND i.id = %s
+        """,
+        (username, inv_id)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"message": "Investment deleted"}
+
+# Insights & Pro Verification Endpoints
+@app.get("/insights/{username}")
+def get_user_insights(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT is_premium FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    is_premium = bool(user["is_premium"]) if user else False
+
+    html_tips = (
+        '<div class="suggest-item"><span class="tag">AI TIP</span><p>Your expenses are well balanced. Keep allocating 20% toward savings.</p></div>'
+        '<div class="suggest-item"><span class="tag">BUDGET</span><p>Consider setting a cap on Food & Shopping to maximize savings.</p></div>'
+    )
+    return {"locked": not is_premium, "html": html_tips}
+
+@app.post("/verify-upi-payment")
+def verify_payment(payload: dict):
+    username = payload.get("username")
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("UPDATE users SET is_premium = TRUE WHERE username = %s", (username,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"message": "Pro features unlocked"}
+
+# CSV Export Endpoint
+@app.get("/export/{username}")
+def export_csv(username: str):
+    entries = get_user_entries(username)
+    csv_lines = ["Date,Type,Category,Amount,Description"]
+    for e in entries:
+        csv_lines.append(f'{e["date"]},{e["type"]},{e["cat"]},{e["amount"]},"{e["desc"]}"')
+    return PlainTextResponse(
+        "\n".join(csv_lines),
+        headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
+    )
+
+# Gemini Receipt Scanner
+@app.post("/scan-receipt/{username}")
+async def scan_receipt(username: str, file: UploadFile = File(...)):
     if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="Gemini API Key is not set")
+        raise HTTPException(status_code=500, detail="Gemini API key not configured")
     try:
+        contents = await file.read()
         model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = (
-            "Extract expense details from the following receipt or transaction text. "
-            "Return JSON with keys: title, amount (float), category, and date (YYYY-MM-DD).\n\n"
-            f"Text: {payload.receipt_text}"
+            "Analyze this receipt image. Output strictly JSON with keys: "
+            "'amount' (number), 'date' (YYYY-MM-DD), 'desc' (short title string), "
+            "'cat' (choose one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other)."
         )
-        response = model.generate_content(prompt)
-        return {"result": response.text}
+        response = model.generate_content([
+            {"mime_type": file.content_type or "image/jpeg", "data": contents},
+            prompt
+        ])
+        import json, re
+        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return {"amount": 0, "desc": "Scanned receipt", "cat": "Other", "date": str(date.today())}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
