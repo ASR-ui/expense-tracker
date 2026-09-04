@@ -130,7 +130,7 @@ def setup_database():
         """
     )
 
-    # Expenses Table
+    # Expenses / Entries Table
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS expenses (
@@ -322,7 +322,26 @@ def reset_password(payload: ResetPasswordRequest):
     
     return {"message": "Password successfully reset! Please log in with your new credentials."}
 
-# User-Specific Data Endpoints (Dashboard & Ledger)
+# Frontend Dashboard Routes (Entries, Budgets, Investments, Expenses)
+@app.get("/entries/{username}")
+def get_user_entries(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT e.id, e.title, e.amount, e.category, e.date, e.notes 
+        FROM expenses e
+        JOIN users u ON e.user_id = u.id
+        WHERE u.username = %s
+        ORDER BY e.date DESC
+        """,
+        (username,)
+    )
+    entries = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return entries
+
 @app.get("/expenses/{username}", response_model=List[ExpenseResponse])
 def get_user_expenses(username: str):
     conn = get_db_connection()
@@ -387,6 +406,14 @@ def save_user_budget(username: str, payload: dict):
     cursor.close()
     conn.close()
     return {"message": "Budget saved successfully"}
+
+@app.get("/investments/{username}")
+def get_user_investments(username: str):
+    return []
+
+@app.post("/investments/{username}")
+def save_user_investment(username: str, payload: dict):
+    return {"message": "Investment saved successfully"}
 
 # General Expense Endpoints
 @app.get("/expenses", response_model=List[ExpenseResponse])
