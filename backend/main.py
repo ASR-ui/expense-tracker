@@ -633,7 +633,14 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
         contents = await file.read()
         mime_type = file.content_type or "image/jpeg"
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # Correct Gemini inline_data dictionary structure
+        image_part = {
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": contents
+            }
+        }
+
         prompt = (
             "Analyze this receipt image carefully. Extract the transaction date, total amount, category, and a short description. "
             "Respond strictly in raw JSON format with these exact keys: "
@@ -641,14 +648,10 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             "\"date\" (string in YYYY-MM-DD format), "
             "\"desc\" (short name of vendor or item), "
             "\"cat\" (must be one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other). "
-            "Do not include Markdown backticks or any extra text."
+            "Do not include Markdown backticks, explanation, or code blocks."
         )
 
-        image_part = {
-            "mime_type": mime_type,
-            "data": contents
-        }
-
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content([image_part, prompt])
         raw_text = response.text.strip()
 
@@ -657,9 +660,9 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             parsed = json.loads(match.group(0))
             return {
                 "amount": float(parsed.get("amount", 0.0)),
-                "date": parsed.get("date", str(date.today())),
-                "desc": parsed.get("desc", "Scanned Receipt"),
-                "cat": parsed.get("cat", "Food")
+                "date": str(parsed.get("date", str(date.today()))),
+                "desc": str(parsed.get("desc", "Scanned Receipt")),
+                "cat": str(parsed.get("cat", "Food"))
             }
 
         return {"amount": 0.0, "desc": "Receipt", "cat": "Food", "date": str(date.today())}
