@@ -134,7 +134,6 @@ def init_db():
             """
         )
 
-        # Ensure schema migrations run safely
         for col_sql in [
             "ALTER TABLE expenses ADD COLUMN user_id INT",
             "ALTER TABLE expenses ADD COLUMN type VARCHAR(20) DEFAULT 'Expense'"
@@ -275,7 +274,7 @@ def login(creds: UserLogin):
 
     return {"message": "Login successful", "user": user}
 
-# Password Reset
+# Password Reset Flow
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     conn = get_db_connection()
@@ -338,14 +337,17 @@ def get_user_entries(username: str):
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT e.id, 
-               e.title, 
-               COALESCE(e.title, e.notes, 'Transaction') AS description,
-               CAST(e.amount AS FLOAT) AS amount, 
-               e.category, 
-               DATE_FORMAT(e.date, '%Y-%m-%d') AS date, 
-               e.notes,
-               COALESCE(e.type, 'Expense') AS type
+        SELECT 
+            e.id, 
+            e.title, 
+            COALESCE(e.notes, e.title, 'Transaction') AS description,
+            COALESCE(e.notes, e.title, 'Transaction') AS `desc`,
+            CAST(e.amount AS FLOAT) AS amount, 
+            e.category, 
+            DATE_FORMAT(e.date, '%Y-%m-%d') AS date, 
+            e.notes,
+            COALESCE(e.type, 'Expense') AS type,
+            COALESCE(e.type, 'Expense') AS entry_type
         FROM expenses e
         JOIN users u ON e.user_id = u.id
         WHERE u.username = %s
@@ -371,12 +373,12 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
         raise HTTPException(status_code=404, detail="User not found")
     
     user_id = user["id"]
-    title = payload.get("title") or payload.get("description") or "Untitled"
+    title = payload.get("title") or payload.get("description") or payload.get("desc") or "Transaction"
     amount = float(payload.get("amount", 0.0))
     category = payload.get("category", "General")
     entry_date = payload.get("date") or str(date.today())
-    notes = payload.get("notes") or payload.get("description") or ""
-    entry_type = payload.get("type", "Expense")
+    notes = payload.get("notes") or payload.get("description") or payload.get("desc") or ""
+    entry_type = payload.get("type") or payload.get("entry_type") or "Expense"
 
     cursor.execute(
         """
@@ -393,11 +395,14 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
     return {
         "id": entry_id,
         "title": title,
+        "description": notes,
+        "desc": notes,
         "amount": amount,
         "category": category,
         "date": str(entry_date),
         "notes": notes,
-        "type": entry_type
+        "type": entry_type,
+        "entry_type": entry_type
     }
 
 # Insights Endpoint
@@ -486,7 +491,7 @@ def get_user_investments(username: str):
 def save_user_investment(username: str, payload: dict):
     return {"message": "Investment saved successfully"}
 
-# General & Compatibility Endpoints
+# Compatibility Routes
 @app.get("/expenses/{username}")
 def get_user_expenses(username: str):
     return get_user_entries(username)
