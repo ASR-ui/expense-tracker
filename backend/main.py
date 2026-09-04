@@ -63,8 +63,8 @@ mail_config = ConnectionConfig(
     MAIL_USERNAME=raw_mail_user,
     MAIL_PASSWORD=raw_mail_pass,
     MAIL_FROM=raw_mail_from,
-    MAIL_PORT=587,
-    MAIL_SERVER="smtp.gmail.com",
+    MAIL_PORT=int(os.getenv("MAIL_PORT", 587)),
+    MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.gmail.com").strip(),
     MAIL_STARTTLS=True,
     MAIL_SSL_TLS=False,
     USE_CREDENTIALS=True,
@@ -311,7 +311,7 @@ def delete_account(username: str):
 
 # Password Reset Flow
 @app.post("/forgot-password")
-async def forgot_password(payload: ForgotPasswordRequest):
+async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     
@@ -343,15 +343,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
     cursor.close()
     conn.close()
     
-    # Send directly here so any SMTP error shows up in Render logs immediately
-    try:
-        print(f"Attempting to send password reset email to {user_email}...")
-        await send_reset_email(user_email, token)
-        print("Password reset email function executed successfully.")
-    except Exception as e:
-        print(f"CRITICAL SMTP ERROR: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
-
+    background_tasks.add_task(send_reset_email, user_email, token)
     return {"message": "Reset link sent directly to your registered email address."}
 
 @app.post("/reset-password")
