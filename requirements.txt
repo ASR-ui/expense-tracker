@@ -1,6 +1,5 @@
 fastapi
 uvicorn
 mysql-connector-python
-bcrypt
-google-genai
-pillow
+google-generativeai
+pydantic
