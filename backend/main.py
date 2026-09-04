@@ -145,6 +145,13 @@ def setup_database():
         """
     )
 
+    # Automatically add user_id column if the table existed beforehand
+    try:
+        cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INT")
+        conn.commit()
+    except Exception:
+        pass
+
     # Password Reset Tokens Table
     cursor.execute(
         """
@@ -207,13 +214,13 @@ class ExpenseResponse(BaseModel):
     title: str
     amount: float
     category: str
-    date: date
+    date: str
     notes: Optional[str] = None
 
 class ReceiptAnalysisRequest(BaseModel):
     receipt_text: str
 
-# Health Check
+# Root Health Check
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Expense Tracker API is running"}
@@ -329,9 +336,10 @@ def get_user_entries(username: str):
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT e.id, e.title, e.amount, e.category, e.date, e.notes 
+        SELECT e.id, e.title, CAST(e.amount AS FLOAT) as amount, e.category, 
+               DATE_FORMAT(e.date, '%Y-%m-%d') as date, e.notes 
         FROM expenses e
-        JOIN users u ON e.user_id = u.id
+        LEFT JOIN users u ON e.user_id = u.id
         WHERE u.username = %s
         ORDER BY e.date DESC
         """,
@@ -342,15 +350,16 @@ def get_user_entries(username: str):
     conn.close()
     return entries
 
-@app.get("/expenses/{username}", response_model=List[ExpenseResponse])
+@app.get("/expenses/{username}")
 def get_user_expenses(username: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT e.id, e.title, e.amount, e.category, e.date, e.notes 
+        SELECT e.id, e.title, CAST(e.amount AS FLOAT) as amount, e.category, 
+               DATE_FORMAT(e.date, '%Y-%m-%d') as date, e.notes 
         FROM expenses e
-        JOIN users u ON e.user_id = u.id
+        LEFT JOIN users u ON e.user_id = u.id
         WHERE u.username = %s
         ORDER BY e.date DESC
         """,
@@ -367,7 +376,7 @@ def get_user_budgets(username: str):
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT b.category, b.monthly_limit
+        SELECT b.category, CAST(b.monthly_limit AS FLOAT) as monthly_limit
         FROM budgets b
         JOIN users u ON b.user_id = u.id
         WHERE u.username = %s
@@ -416,17 +425,23 @@ def save_user_investment(username: str, payload: dict):
     return {"message": "Investment saved successfully"}
 
 # General Expense Endpoints
-@app.get("/expenses", response_model=List[ExpenseResponse])
+@app.get("/expenses")
 def list_expenses():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, title, amount, category, date, notes FROM expenses ORDER BY date DESC")
+    cursor.execute(
+        """
+        SELECT id, title, CAST(amount AS FLOAT) as amount, category, 
+               DATE_FORMAT(date, '%Y-%m-%d') as date, notes 
+        FROM expenses ORDER BY date DESC
+        """
+    )
     expenses = cursor.fetchall()
     cursor.close()
     conn.close()
     return expenses
 
-@app.post("/expenses", response_model=ExpenseResponse, status_code=status.HTTP_201_CREATED)
+@app.post("/expenses", status_code=status.HTTP_201_CREATED)
 def create_expense(expense: ExpenseCreate):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -450,7 +465,7 @@ def create_expense(expense: ExpenseCreate):
         "title": expense.title,
         "amount": expense.amount,
         "category": expense.category,
-        "date": expense.date,
+        "date": str(expense.date),
         "notes": expense.notes
     }
 
