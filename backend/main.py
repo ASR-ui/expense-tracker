@@ -54,7 +54,7 @@ def get_db_connection():
             detail=f"Database connection error: {str(e)}"
         )
 
-# Email Setup
+# Email Setup (FastAPI-Mail via SMTP)
 mail_config = ConnectionConfig(
     MAIL_USERNAME=os.getenv("MAIL_USERNAME", ""),
     MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", ""),
@@ -87,9 +87,10 @@ async def send_reset_email(recipient_email: str, token: str):
         recipients=[recipient_email],
         body=(
             f"Hello,\n\n"
+            f"You requested a password reset for your Expense Tracker account.\n"
             f"Click the link below to set a new password:\n\n"
             f"{reset_link}\n\n"
-            f"This link expires in 15 minutes.\n"
+            f"This link expires in 15 minutes. If you did not make this request, you can safely ignore this email.\n"
         ),
         subtype=MessageType.plain
     )
@@ -228,7 +229,7 @@ class ResetPasswordRequest(BaseModel):
 def read_root():
     return {"status": "online", "message": "Expense Tracker API is running"}
 
-# Authentication
+# User Authentication Endpoints
 @app.post("/signup", status_code=status.HTTP_201_CREATED)
 def signup(user: UserSignup, background_tasks: BackgroundTasks):
     conn = get_db_connection()
@@ -293,7 +294,7 @@ def delete_account(username: str):
     conn.close()
     return {"message": "Account deleted"}
 
-# Password Reset
+# Password Reset Flow
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     conn = get_db_connection()
@@ -303,22 +304,29 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
     if not user:
         cursor.close()
         conn.close()
-        return {"message": "If registered, reset link sent"}
+        return {"message": "If that email is registered, a password reset link has been sent."}
     
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=15)
-    cursor.execute("INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)", (payload.email, token, expires_at))
+    cursor.execute(
+        "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)",
+        (payload.email, token, expires_at)
+    )
     conn.commit()
     cursor.close()
     conn.close()
+    
     background_tasks.add_task(send_reset_email, payload.email, token)
-    return {"message": "Reset link sent"}
+    return {"message": "If that email is registered, a password reset link has been sent."}
 
 @app.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT email FROM password_resets WHERE token = %s AND expires_at > %s", (payload.token, datetime.utcnow()))
+    cursor.execute(
+        "SELECT email FROM password_resets WHERE token = %s AND expires_at > %s",
+        (payload.token, datetime.utcnow())
+    )
     record = cursor.fetchone()
     if not record:
         cursor.close()
@@ -331,9 +339,9 @@ def reset_password(payload: ResetPasswordRequest):
     conn.commit()
     cursor.close()
     conn.close()
-    return {"message": "Password successfully reset"}
+    return {"message": "Password successfully reset! Please log in with your new credentials."}
 
-# Ledger / Entries
+# Ledger / Entries Endpoints
 @app.get("/entries/{username}")
 def get_user_entries(username: str):
     conn = get_db_connection()
@@ -396,18 +404,24 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
 def delete_user_entry(username: str, entry_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("DELETE e FROM expenses e JOIN users u ON e.user_id = u.id WHERE u.username = %s AND e.id = %s", (username, entry_id))
+    cursor.execute(
+        "DELETE e FROM expenses e JOIN users u ON e.user_id = u.id WHERE u.username = %s AND e.id = %s",
+        (username, entry_id)
+    )
     conn.commit()
     cursor.close()
     conn.close()
     return {"message": "Entry deleted"}
 
-# Budgets
+# Budgets Endpoints
 @app.get("/budgets/{username}")
 def get_user_budgets(username: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT b.category, CAST(b.monthly_limit AS FLOAT) AS monthly_limit FROM budgets b JOIN users u ON b.user_id = u.id WHERE u.username = %s", (username,))
+    cursor.execute(
+        "SELECT b.category, CAST(b.monthly_limit AS FLOAT) AS monthly_limit FROM budgets b JOIN users u ON b.user_id = u.id WHERE u.username = %s",
+        (username,)
+    )
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -440,13 +454,16 @@ def save_user_budget(username: str, payload: dict):
 def delete_user_budget(username: str, category: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("DELETE b FROM budgets b JOIN users u ON b.user_id = u.id WHERE u.username = %s AND b.category = %s", (username, category))
+    cursor.execute(
+        "DELETE b FROM budgets b JOIN users u ON b.user_id = u.id WHERE u.username = %s AND b.category = %s",
+        (username, category)
+    )
     conn.commit()
     cursor.close()
     conn.close()
     return {"message": "Budget deleted"}
 
-# Wealth / Investments
+# Wealth / Investments Endpoints
 @app.get("/investments/{username}")
 def get_user_investments(username: str):
     conn = get_db_connection()
@@ -499,13 +516,16 @@ def save_user_investment(username: str, payload: dict):
 def delete_user_investment(username: str, inv_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("DELETE i FROM investments i JOIN users u ON i.user_id = u.id WHERE u.username = %s AND i.id = %s", (username, inv_id))
+    cursor.execute(
+        "DELETE i FROM investments i JOIN users u ON i.user_id = u.id WHERE u.username = %s AND i.id = %s",
+        (username, inv_id)
+    )
     conn.commit()
     cursor.close()
     conn.close()
     return {"message": "Investment deleted"}
 
-# Insights and Pro Verification
+# Insights & Pro Verification Endpoints
 @app.get("/insights/{username}")
 def get_user_insights(username: str):
     conn = get_db_connection()
@@ -532,22 +552,28 @@ def verify_payment(payload: dict):
     conn.close()
     return {"message": "Pro features unlocked"}
 
-# CSV Export
+# CSV Export Endpoint
 @app.get("/export/{username}")
 def export_csv(username: str):
     entries = get_user_entries(username)
     csv_lines = ["Date,Type,Category,Amount,Description"]
     for e in entries:
         csv_lines.append(f'{e["date"]},{e["type"]},{e["cat"]},{e["amount"]},"{e["desc"]}"')
-    return PlainTextResponse("\n".join(csv_lines), headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'})
+    return PlainTextResponse(
+        "\n".join(csv_lines),
+        headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
+    )
 
-# Gemini Direct REST Receipt Scanner (No Python SDK version errors)
+# Gemini Receipt Scanner Endpoint (REST integration)
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
     raw_key = os.getenv("GEMINI_API_KEY", "")
     clean_key = raw_key.strip().strip('"').strip("'")
     if not clean_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured on Render.")
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY environment variable is not configured on Render."
+        )
 
     try:
         contents = await file.read()
