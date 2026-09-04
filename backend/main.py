@@ -1,6 +1,7 @@
 import os
 import hashlib
 import secrets
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
@@ -11,17 +12,6 @@ from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from pydantic import BaseModel
-
-app = FastAPI(title="Expense Tracker API")
-
-# Enable CORS for frontend integration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Configure Gemini AI
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -50,6 +40,7 @@ def get_db_pool():
             password=DB_PASSWORD,
             database=DB_NAME,
             ssl_disabled=False,
+            connection_timeout=10,
         )
     return db_pool
 
@@ -109,77 +100,90 @@ async def send_reset_email(recipient_email: str, token: str):
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-# Initialize Database Schema
-@app.on_event("startup")
-def setup_database():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Users Table
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            first_name VARCHAR(100),
-            last_name VARCHAR(100),
-            email VARCHAR(255) UNIQUE NOT NULL,
-            phone_number VARCHAR(20),
-            username VARCHAR(100) UNIQUE NOT NULL,
-            password VARCHAR(255) NOT NULL
-        )
-        """
-    )
-
-    # Expenses / Entries Table
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT,
-            title VARCHAR(255) NOT NULL,
-            amount DECIMAL(10, 2) NOT NULL,
-            category VARCHAR(100) NOT NULL,
-            date DATE NOT NULL,
-            notes TEXT
-        )
-        """
-    )
-
-    # Automatically add user_id column if the table existed beforehand
+def init_db():
     try:
-        cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INT")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                first_name VARCHAR(100),
+                last_name VARCHAR(100),
+                email VARCHAR(255) UNIQUE NOT NULL,
+                phone_number VARCHAR(20),
+                username VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS expenses (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                title VARCHAR(255) NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                date DATE NOT NULL,
+                notes TEXT
+            )
+            """
+        )
+
+        try:
+            cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INT")
+            conn.commit()
+        except Exception:
+            pass
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_resets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL,
+                token VARCHAR(255) NOT NULL,
+                expires_at DATETIME NOT NULL
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS budgets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                monthly_limit DECIMAL(10, 2) NOT NULL,
+                UNIQUE KEY unique_user_category (user_id, category)
+            )
+            """
+        )
+
         conn.commit()
-    except Exception:
-        pass
+        cursor.close()
+        conn.close()
+        print("Database schema initialized successfully.")
+    except Exception as ex:
+        print(f"Database init warning: {ex}")
 
-    # Password Reset Tokens Table
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS password_resets (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            email VARCHAR(255) NOT NULL,
-            token VARCHAR(255) NOT NULL,
-            expires_at DATETIME NOT NULL
-        )
-        """
-    )
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
 
-    # Budgets Table
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS budgets (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT NOT NULL,
-            category VARCHAR(100) NOT NULL,
-            monthly_limit DECIMAL(10, 2) NOT NULL,
-            UNIQUE KEY unique_user_category (user_id, category)
-        )
-        """
-    )
+app = FastAPI(title="Expense Tracker API", lifespan=lifespan)
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+# Enable CORS for frontend integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Pydantic Schemas
 class UserSignup(BaseModel):
@@ -220,7 +224,7 @@ class ExpenseResponse(BaseModel):
 class ReceiptAnalysisRequest(BaseModel):
     receipt_text: str
 
-# Root Health Check
+# Health Check
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Expense Tracker API is running"}
@@ -329,7 +333,7 @@ def reset_password(payload: ResetPasswordRequest):
     
     return {"message": "Password successfully reset! Please log in with your new credentials."}
 
-# Frontend Dashboard Routes (Entries, Budgets, Investments, Expenses)
+# Frontend Dashboard Routes
 @app.get("/entries/{username}")
 def get_user_entries(username: str):
     conn = get_db_connection()
