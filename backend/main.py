@@ -318,7 +318,7 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
     expires_at = datetime.utcnow() + timedelta(minutes=15)
     
     cursor.execute(
-        "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)",
+        "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s)",
         (payload.email, token, expires_at)
     )
     conn.commit()
@@ -620,7 +620,7 @@ def export_csv(username: str):
         headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
     )
 
-# Gemini Receipt Scanner
+# Gemini Receipt Scanner (Dynamic Model Discovery)
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
     raw_key = os.getenv("GEMINI_API_KEY", "")
@@ -637,6 +637,27 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
 
+        # Query all models available to this API key to avoid 404 version mismatch
+        supported_models = []
+        try:
+            for m in genai.list_models():
+                if "generateContent" in m.supported_generation_methods:
+                    supported_models.append(m.name)
+        except Exception as e:
+            print(f"Could not list models: {e}")
+
+        # Choose the best matching vision model supported by your key
+        selected_model = "gemini-1.5-flash"
+        if supported_models:
+            preferred = [
+                "models/gemini-1.5-flash",
+                "models/gemini-1.5-flash-latest",
+                "models/gemini-1.5-pro",
+                "models/gemini-pro-vision"
+            ]
+            matched = [p for p in preferred if p in supported_models]
+            selected_model = matched[0] if matched else supported_models[0]
+
         prompt = (
             "Analyze this receipt image carefully. Extract the transaction date, total amount, category, and a short description. "
             "Respond strictly in raw JSON format with these exact keys: "
@@ -647,22 +668,8 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             "Do not include Markdown backticks or extra text."
         )
 
-        response = None
-        model_names = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro-vision"]
-        last_err = None
-
-        for m_name in model_names:
-            try:
-                model = genai.GenerativeModel(m_name)
-                response = model.generate_content([image, prompt])
-                if response and response.text:
-                    break
-            except Exception as ex:
-                last_err = ex
-                continue
-
-        if not response or not response.text:
-            raise HTTPException(status_code=500, detail=f"AI Model Error: {str(last_err)}")
+        model = genai.GenerativeModel(selected_model)
+        response = model.generate_content([image, prompt])
 
         raw_text = response.text.strip()
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
