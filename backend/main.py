@@ -647,10 +647,24 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             "Do not include Markdown backticks or extra text."
         )
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content([image, prompt])
-        raw_text = response.text.strip()
+        response = None
+        model_names = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro-vision"]
+        last_err = None
 
+        for m_name in model_names:
+            try:
+                model = genai.GenerativeModel(m_name)
+                response = model.generate_content([image, prompt])
+                if response and response.text:
+                    break
+            except Exception as ex:
+                last_err = ex
+                continue
+
+        if not response or not response.text:
+            raise HTTPException(status_code=500, detail=f"AI Model Error: {str(last_err)}")
+
+        raw_text = response.text.strip()
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         if match:
             parsed = json.loads(match.group(0))
