@@ -211,6 +211,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Expense Tracker API", lifespan=lifespan)
 
+# CORS middleware must wrap all responses, including errors
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
