@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 mysql-connector-python
-google-generativeai
 pydantic
+google-generativeai
 fastapi-mail
+python-multipart
