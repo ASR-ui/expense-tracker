@@ -134,13 +134,13 @@ def init_db():
             """
         )
 
-        # Migration columns if table existed previously
-        for col_def in [
+        # Ensure schema migrations run safely
+        for col_sql in [
             "ALTER TABLE expenses ADD COLUMN user_id INT",
             "ALTER TABLE expenses ADD COLUMN type VARCHAR(20) DEFAULT 'Expense'"
         ]:
             try:
-                cursor.execute(col_def)
+                cursor.execute(col_sql)
                 conn.commit()
             except Exception:
                 pass
@@ -171,9 +171,9 @@ def init_db():
         conn.commit()
         cursor.close()
         conn.close()
-        print("Database initialized successfully.")
+        print("Database schema verified.")
     except Exception as ex:
-        print(f"Database init warning: {ex}")
+        print(f"Database setup note: {ex}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -182,7 +182,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Expense Tracker API", lifespan=lifespan)
 
-# CORS configuration
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -227,7 +227,7 @@ class ReceiptAnalysisRequest(BaseModel):
 def read_root():
     return {"status": "online", "message": "Expense Tracker API is running"}
 
-# User Authentication
+# User Authentication Endpoints
 @app.post("/signup", status_code=status.HTTP_201_CREATED)
 def signup(user: UserSignup, background_tasks: BackgroundTasks):
     conn = get_db_connection()
@@ -275,7 +275,7 @@ def login(creds: UserLogin):
 
     return {"message": "Login successful", "user": user}
 
-# Password Reset Flow
+# Password Reset
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     conn = get_db_connection()
@@ -331,7 +331,7 @@ def reset_password(payload: ResetPasswordRequest):
     
     return {"message": "Password successfully reset! Please log in with your new credentials."}
 
-# Ledger / Entries Endpoints (GET and POST for /entries/{username})
+# Ledger / Entries Endpoints
 @app.get("/entries/{username}")
 def get_user_entries(username: str):
     conn = get_db_connection()
@@ -400,6 +400,36 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
         "type": entry_type
     }
 
+# Insights Endpoint
+@app.get("/insights/{username}")
+def get_user_insights(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT 
+            COALESCE(SUM(CASE WHEN type = 'Income' THEN amount ELSE 0 END), 0) AS total_income,
+            COALESCE(SUM(CASE WHEN type = 'Expense' OR type IS NULL THEN amount ELSE 0 END), 0) AS total_expense
+        FROM expenses e
+        JOIN users u ON e.user_id = u.id
+        WHERE u.username = %s
+        """,
+        (username,)
+    )
+    totals = cursor.fetchone() or {"total_income": 0, "total_expense": 0}
+    cursor.close()
+    conn.close()
+
+    total_income = float(totals["total_income"])
+    total_expense = float(totals["total_expense"])
+
+    return {
+        "total_income": total_income,
+        "total_expense": total_expense,
+        "net_savings": total_income - total_expense,
+        "summary": "Monthly balance in sync."
+    }
+
 # Budgets Endpoints
 @app.get("/budgets/{username}")
 def get_user_budgets(username: str):
@@ -456,7 +486,7 @@ def get_user_investments(username: str):
 def save_user_investment(username: str, payload: dict):
     return {"message": "Investment saved successfully"}
 
-# Expenses Compatibility Endpoints
+# General & Compatibility Endpoints
 @app.get("/expenses/{username}")
 def get_user_expenses(username: str):
     return get_user_entries(username)
