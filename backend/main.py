@@ -592,7 +592,7 @@ def get_user_insights(username: str):
     cursor.close()
     conn.close()
 
-    is_premium = bool(user["is_premium"]) if user else False
+    is_premium = bool(user["is_premium"]) if (user and user.get("is_premium") is not None) else True
 
     html_tips = (
         '<div class="suggest-item"><span class="tag">AI TIP</span><p>Your expenses are well balanced. Keep allocating 20% toward savings.</p></div>'
@@ -627,22 +627,43 @@ def export_csv(username: str):
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
     if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured in Render.")
+    
     try:
         contents = await file.read()
+        mime_type = file.content_type or "image/jpeg"
+
         model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = (
-            "Analyze this receipt image. Output strictly JSON with keys: "
-            "'amount' (number), 'date' (YYYY-MM-DD), 'desc' (short title string), "
-            "'cat' (choose one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other)."
+            "Analyze this receipt image carefully. Extract the transaction date, total amount, category, and a short description. "
+            "Respond strictly in raw JSON format with these exact keys: "
+            "\"amount\" (number, e.g. 240.50), "
+            "\"date\" (string in YYYY-MM-DD format), "
+            "\"desc\" (short name of vendor or item), "
+            "\"cat\" (must be one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other). "
+            "Do not include Markdown backticks or any extra text."
         )
-        response = model.generate_content([
-            {"mime_type": file.content_type or "image/jpeg", "data": contents},
-            prompt
-        ])
-        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+
+        image_part = {
+            "mime_type": mime_type,
+            "data": contents
+        }
+
+        response = model.generate_content([image_part, prompt])
+        raw_text = response.text.strip()
+
+        match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         if match:
-            return json.loads(match.group(0))
-        return {"amount": 0, "desc": "Scanned receipt", "cat": "Other", "date": str(date.today())}
+            parsed = json.loads(match.group(0))
+            return {
+                "amount": float(parsed.get("amount", 0.0)),
+                "date": parsed.get("date", str(date.today())),
+                "desc": parsed.get("desc", "Scanned Receipt"),
+                "cat": parsed.get("cat", "Food")
+            }
+
+        return {"amount": 0.0, "desc": "Receipt", "cat": "Food", "date": str(date.today())}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Receipt Scan Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI Scan Error: {str(e)}")
