@@ -1,4 +1,5 @@
 import os
+import io
 import base64
 import hashlib
 import json
@@ -17,7 +18,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from pydantic import BaseModel
 
-# Aiven MySQL Connection Pool Configuration
+# Database Connection Pool Configuration
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = int(os.getenv("DB_PORT", 18832))
 DB_USER = os.getenv("DB_USER", "avnadmin")
@@ -53,7 +54,7 @@ def get_db_connection():
             detail=f"Database connection error: {str(e)}"
         )
 
-# Email Configuration (fastapi-mail via Gmail SMTP)
+# Email Setup
 mail_config = ConnectionConfig(
     MAIL_USERNAME=os.getenv("MAIL_USERNAME", ""),
     MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", ""),
@@ -71,7 +72,7 @@ async def send_welcome_email(recipient_email: str, username: str):
     message = MessageSchema(
         subject="Welcome to Expense Tracker!",
         recipients=[recipient_email],
-        body=f"Hi {username},\n\nYour Expense Tracker account has been created successfully!\n\nBest regards,\nExpense Tracker Team",
+        body=f"Hi {username},\n\nYour account has been created successfully!\n\nBest regards,\nExpense Tracker Team",
         subtype=MessageType.plain
     )
     fm = FastMail(mail_config)
@@ -86,10 +87,9 @@ async def send_reset_email(recipient_email: str, token: str):
         recipients=[recipient_email],
         body=(
             f"Hello,\n\n"
-            f"You requested a password reset for your Expense Tracker account.\n"
             f"Click the link below to set a new password:\n\n"
             f"{reset_link}\n\n"
-            f"This link expires in 15 minutes. If you did not make this request, you can safely ignore this email.\n"
+            f"This link expires in 15 minutes.\n"
         ),
         subtype=MessageType.plain
     )
@@ -196,7 +196,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Expense Tracker API", lifespan=lifespan)
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -205,7 +204,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Schemas
+# Request Models
 class UserSignup(BaseModel):
     firstName: Optional[str] = None
     lastName: Optional[str] = None
@@ -225,20 +224,17 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
-# Health Check
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Expense Tracker API is running"}
 
-# User Authentication Endpoints
+# Authentication
 @app.post("/signup", status_code=status.HTTP_201_CREATED)
 def signup(user: UserSignup, background_tasks: BackgroundTasks):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("SELECT id FROM users WHERE username = %s OR email = %s", (user.username, user.email))
-    existing = cursor.fetchone()
-    if existing:
+    if cursor.fetchone():
         cursor.close()
         conn.close()
         raise HTTPException(status_code=400, detail="Username or email already exists")
@@ -264,7 +260,6 @@ def login(creds: UserLogin):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     hashed_pw = hash_password(creds.password)
-
     cursor.execute(
         "SELECT id, username, first_name, email FROM users WHERE username = %s AND password = %s",
         (creds.username, hashed_pw)
@@ -275,7 +270,6 @@ def login(creds: UserLogin):
 
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-
     return {"message": "Login successful", "user": user}
 
 @app.delete("/users/{username}")
@@ -297,65 +291,49 @@ def delete_account(username: str):
     conn.commit()
     cursor.close()
     conn.close()
-    return {"message": "Account and all data deleted"}
+    return {"message": "Account deleted"}
 
-# Password Reset Flow
+# Password Reset
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("SELECT id FROM users WHERE email = %s", (payload.email,))
     user = cursor.fetchone()
-    
     if not user:
         cursor.close()
         conn.close()
-        return {"message": "If that email is registered, a password reset link has been sent."}
+        return {"message": "If registered, reset link sent"}
     
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=15)
-    
-    cursor.execute(
-        "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)",
-        (payload.email, token, expires_at)
-    )
+    cursor.execute("INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)", (payload.email, token, expires_at))
     conn.commit()
     cursor.close()
     conn.close()
-    
     background_tasks.add_task(send_reset_email, payload.email, token)
-    return {"message": "If that email is registered, a password reset link has been sent."}
+    return {"message": "Reset link sent"}
 
 @app.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
-    cursor.execute(
-        "SELECT email FROM password_resets WHERE token = %s AND expires_at > %s",
-        (payload.token, datetime.utcnow())
-    )
+    cursor.execute("SELECT email FROM password_resets WHERE token = %s AND expires_at > %s", (payload.token, datetime.utcnow()))
     record = cursor.fetchone()
-    
     if not record:
         cursor.close()
         conn.close()
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
     
-    email = record["email"]
     new_hashed_pw = hash_password(payload.new_password)
-    
-    cursor.execute("UPDATE users SET password = %s WHERE email = %s", (new_hashed_pw, email))
+    cursor.execute("UPDATE users SET password = %s WHERE email = %s", (new_hashed_pw, record["email"]))
     cursor.execute("DELETE FROM password_resets WHERE token = %s", (payload.token,))
-    
     conn.commit()
     cursor.close()
     conn.close()
-    
-    return {"message": "Password successfully reset! Please log in with your new credentials."}
+    return {"message": "Password successfully reset"}
 
-# Ledger / Entries Endpoints
+# Ledger / Entries
 @app.get("/entries/{username}")
 def get_user_entries(username: str):
     conn = get_db_connection()
@@ -388,7 +366,6 @@ def get_user_entries(username: str):
 def create_user_entry(username: str, payload: Dict[str, Any]):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
     user = cursor.fetchone()
     if not user:
@@ -396,7 +373,6 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
         conn.close()
         raise HTTPException(status_code=404, detail="User not found")
     
-    user_id = user["id"]
     desc = payload.get("desc") or payload.get("description") or payload.get("title") or "Transaction"
     cat = payload.get("cat") or payload.get("category") or "Other"
     amount = float(payload.get("amount", 0.0))
@@ -408,59 +384,34 @@ def create_user_entry(username: str, payload: Dict[str, Any]):
         INSERT INTO expenses (user_id, title, amount, category, date, notes, type)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (user_id, desc, amount, cat, entry_date, desc, entry_type)
+        (user["id"], desc, amount, cat, entry_date, desc, entry_type)
     )
     conn.commit()
     entry_id = cursor.lastrowid
     cursor.close()
     conn.close()
-
-    return {
-        "id": entry_id,
-        "desc": desc,
-        "cat": cat,
-        "amount": amount,
-        "date": str(entry_date),
-        "type": entry_type
-    }
+    return {"id": entry_id, "desc": desc, "cat": cat, "amount": amount, "date": str(entry_date), "type": entry_type}
 
 @app.delete("/entries/{username}/{entry_id}")
 def delete_user_entry(username: str, entry_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        """
-        DELETE e FROM expenses e 
-        JOIN users u ON e.user_id = u.id 
-        WHERE u.username = %s AND e.id = %s
-        """,
-        (username, entry_id)
-    )
+    cursor.execute("DELETE e FROM expenses e JOIN users u ON e.user_id = u.id WHERE u.username = %s AND e.id = %s", (username, entry_id))
     conn.commit()
     cursor.close()
     conn.close()
     return {"message": "Entry deleted"}
 
-# Budgets Endpoints
+# Budgets
 @app.get("/budgets/{username}")
 def get_user_budgets(username: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        """
-        SELECT b.category, CAST(b.monthly_limit AS FLOAT) AS monthly_limit
-        FROM budgets b
-        JOIN users u ON b.user_id = u.id
-        WHERE u.username = %s
-        """,
-        (username,)
-    )
+    cursor.execute("SELECT b.category, CAST(b.monthly_limit AS FLOAT) AS monthly_limit FROM budgets b JOIN users u ON b.user_id = u.id WHERE u.username = %s", (username,))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    
-    budgets_dict = {r["category"]: r["monthly_limit"] for r in rows}
-    return budgets_dict
+    return {r["category"]: r["monthly_limit"] for r in rows}
 
 @app.post("/budgets/{username}")
 def save_user_budget(username: str, payload: dict):
@@ -473,41 +424,29 @@ def save_user_budget(username: str, payload: dict):
         conn.close()
         raise HTTPException(status_code=404, detail="User not found")
     
-    user_id = user["id"]
-    category = payload.get("category")
-    monthly_limit = payload.get("monthly_limit")
-
     cursor.execute(
         """
-        INSERT INTO budgets (user_id, category, monthly_limit)
-        VALUES (%s, %s, %s)
+        INSERT INTO budgets (user_id, category, monthly_limit) VALUES (%s, %s, %s)
         ON DUPLICATE KEY UPDATE monthly_limit = %s
         """,
-        (user_id, category, monthly_limit, monthly_limit)
+        (user["id"], payload.get("category"), payload.get("monthly_limit"), payload.get("monthly_limit"))
     )
     conn.commit()
     cursor.close()
     conn.close()
-    return {"message": "Budget saved successfully"}
+    return {"message": "Budget saved"}
 
 @app.delete("/budgets/{username}/{category}")
 def delete_user_budget(username: str, category: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        """
-        DELETE b FROM budgets b
-        JOIN users u ON b.user_id = u.id
-        WHERE u.username = %s AND b.category = %s
-        """,
-        (username, category)
-    )
+    cursor.execute("DELETE b FROM budgets b JOIN users u ON b.user_id = u.id WHERE u.username = %s AND b.category = %s", (username, category))
     conn.commit()
     cursor.close()
     conn.close()
-    return {"message": "Budget limit removed"}
+    return {"message": "Budget deleted"}
 
-# Wealth / Investments Endpoints
+# Wealth / Investments
 @app.get("/investments/{username}")
 def get_user_investments(username: str):
     conn = get_db_connection()
@@ -518,10 +457,8 @@ def get_user_investments(username: str):
                CAST(i.invested_amount AS FLOAT) as invested_amount,
                CAST(i.current_value AS FLOAT) as current_value,
                DATE_FORMAT(i.date, '%Y-%m-%d') as date
-        FROM investments i
-        JOIN users u ON i.user_id = u.id
-        WHERE u.username = %s
-        ORDER BY i.date DESC
+        FROM investments i JOIN users u ON i.user_id = u.id
+        WHERE u.username = %s ORDER BY i.date DESC
         """,
         (username,)
     )
@@ -547,11 +484,8 @@ def save_user_investment(username: str, payload: dict):
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (
-            user["id"],
-            payload.get("asset_name"),
-            payload.get("asset_type"),
-            float(payload.get("invested_amount", 0.0)),
-            float(payload.get("current_value", 0.0)),
+            user["id"], payload.get("asset_name"), payload.get("asset_type"),
+            float(payload.get("invested_amount", 0.0)), float(payload.get("current_value", 0.0)),
             payload.get("date") or str(date.today())
         )
     )
@@ -565,20 +499,13 @@ def save_user_investment(username: str, payload: dict):
 def delete_user_investment(username: str, inv_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        """
-        DELETE i FROM investments i
-        JOIN users u ON i.user_id = u.id
-        WHERE u.username = %s AND i.id = %s
-        """,
-        (username, inv_id)
-    )
+    cursor.execute("DELETE i FROM investments i JOIN users u ON i.user_id = u.id WHERE u.username = %s AND i.id = %s", (username, inv_id))
     conn.commit()
     cursor.close()
     conn.close()
     return {"message": "Investment deleted"}
 
-# Insights & Pro Verification Endpoints
+# Insights and Pro Verification
 @app.get("/insights/{username}")
 def get_user_insights(username: str):
     conn = get_db_connection()
@@ -589,7 +516,6 @@ def get_user_insights(username: str):
     conn.close()
 
     is_premium = bool(user["is_premium"]) if (user and user.get("is_premium") is not None) else True
-
     html_tips = (
         '<div class="suggest-item"><span class="tag">AI TIP</span><p>Your expenses are well balanced. Keep allocating 20% toward savings.</p></div>'
         '<div class="suggest-item"><span class="tag">BUDGET</span><p>Consider setting a cap on Food & Shopping to maximize savings.</p></div>'
@@ -598,38 +524,30 @@ def get_user_insights(username: str):
 
 @app.post("/verify-upi-payment")
 def verify_payment(payload: dict):
-    username = payload.get("username")
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("UPDATE users SET is_premium = TRUE WHERE username = %s", (username,))
+    cursor.execute("UPDATE users SET is_premium = TRUE WHERE username = %s", (payload.get("username"),))
     conn.commit()
     cursor.close()
     conn.close()
     return {"message": "Pro features unlocked"}
 
-# CSV Export Endpoint
+# CSV Export
 @app.get("/export/{username}")
 def export_csv(username: str):
     entries = get_user_entries(username)
     csv_lines = ["Date,Type,Category,Amount,Description"]
     for e in entries:
         csv_lines.append(f'{e["date"]},{e["type"]},{e["cat"]},{e["amount"]},"{e["desc"]}"')
-    return PlainTextResponse(
-        "\n".join(csv_lines),
-        headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
-    )
+    return PlainTextResponse("\n".join(csv_lines), headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'})
 
-# Direct REST Gemini Receipt Scanner
+# Gemini Direct REST Receipt Scanner (No Python SDK version errors)
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
     raw_key = os.getenv("GEMINI_API_KEY", "")
     clean_key = raw_key.strip().strip('"').strip("'")
-
     if not clean_key:
-        raise HTTPException(
-            status_code=500,
-            detail="GEMINI_API_KEY environment variable is not configured on Render."
-        )
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured on Render.")
 
     try:
         contents = await file.read()
@@ -643,7 +561,7 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             "\"date\" (string in YYYY-MM-DD format), "
             "\"desc\" (short name of vendor or item), "
             "\"cat\" (must be one of: Food, Transport, Housing, Utilities, Health, Shopping, Entertainment, Other). "
-            "Do not include Markdown formatting, backticks, or explanation."
+            "Do not include Markdown backticks or extra text."
         )
 
         payload = {
@@ -655,7 +573,6 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             }]
         }
 
-        # Query the official Google Generative Language v1 REST endpoint directly
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={clean_key}"
 
         async with httpx.AsyncClient(timeout=45.0) as client:
@@ -671,7 +588,6 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
             return {"amount": 0.0, "desc": "Receipt", "cat": "Food", "date": str(date.today())}
 
         raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
-
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         if match:
             parsed = json.loads(match.group(0))
@@ -687,5 +603,4 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Receipt Scan Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI Scan Error: {str(e)}")
