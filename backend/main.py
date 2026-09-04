@@ -3,7 +3,7 @@ import hashlib
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 
 import google.generativeai as genai
 import mysql.connector
@@ -128,16 +128,22 @@ def init_db():
                 amount DECIMAL(10, 2) NOT NULL,
                 category VARCHAR(100) NOT NULL,
                 date DATE NOT NULL,
-                notes TEXT
+                notes TEXT,
+                type VARCHAR(20) DEFAULT 'Expense'
             )
             """
         )
 
-        try:
-            cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INT")
-            conn.commit()
-        except Exception:
-            pass
+        # Migration columns if table existed previously
+        for col_def in [
+            "ALTER TABLE expenses ADD COLUMN user_id INT",
+            "ALTER TABLE expenses ADD COLUMN type VARCHAR(20) DEFAULT 'Expense'"
+        ]:
+            try:
+                cursor.execute(col_def)
+                conn.commit()
+            except Exception:
+                pass
 
         cursor.execute(
             """
@@ -165,7 +171,7 @@ def init_db():
         conn.commit()
         cursor.close()
         conn.close()
-        print("Database schema initialized successfully.")
+        print("Database initialized successfully.")
     except Exception as ex:
         print(f"Database init warning: {ex}")
 
@@ -176,7 +182,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Expense Tracker API", lifespan=lifespan)
 
-# Enable CORS for frontend integration
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -185,7 +191,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic Schemas
+# Schemas
 class UserSignup(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -213,14 +219,6 @@ class ExpenseCreate(BaseModel):
     notes: Optional[str] = None
     username: Optional[str] = None
 
-class ExpenseResponse(BaseModel):
-    id: int
-    title: str
-    amount: float
-    category: str
-    date: str
-    notes: Optional[str] = None
-
 class ReceiptAnalysisRequest(BaseModel):
     receipt_text: str
 
@@ -229,7 +227,7 @@ class ReceiptAnalysisRequest(BaseModel):
 def read_root():
     return {"status": "online", "message": "Expense Tracker API is running"}
 
-# User Authentication Endpoints
+# User Authentication
 @app.post("/signup", status_code=status.HTTP_201_CREATED)
 def signup(user: UserSignup, background_tasks: BackgroundTasks):
     conn = get_db_connection()
@@ -333,19 +331,25 @@ def reset_password(payload: ResetPasswordRequest):
     
     return {"message": "Password successfully reset! Please log in with your new credentials."}
 
-# Frontend Dashboard Routes
+# Ledger / Entries Endpoints (GET and POST for /entries/{username})
 @app.get("/entries/{username}")
 def get_user_entries(username: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT e.id, e.title, CAST(e.amount AS FLOAT) as amount, e.category, 
-               DATE_FORMAT(e.date, '%Y-%m-%d') as date, e.notes 
+        SELECT e.id, 
+               e.title, 
+               COALESCE(e.title, e.notes, 'Transaction') AS description,
+               CAST(e.amount AS FLOAT) AS amount, 
+               e.category, 
+               DATE_FORMAT(e.date, '%Y-%m-%d') AS date, 
+               e.notes,
+               COALESCE(e.type, 'Expense') AS type
         FROM expenses e
-        LEFT JOIN users u ON e.user_id = u.id
+        JOIN users u ON e.user_id = u.id
         WHERE u.username = %s
-        ORDER BY e.date DESC
+        ORDER BY e.date DESC, e.id DESC
         """,
         (username,)
     )
@@ -354,33 +358,56 @@ def get_user_entries(username: str):
     conn.close()
     return entries
 
-@app.get("/expenses/{username}")
-def get_user_expenses(username: str):
+@app.post("/entries/{username}", status_code=status.HTTP_201_CREATED)
+def create_user_entry(username: str, payload: Dict[str, Any]):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+    if not user:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = user["id"]
+    title = payload.get("title") or payload.get("description") or "Untitled"
+    amount = float(payload.get("amount", 0.0))
+    category = payload.get("category", "General")
+    entry_date = payload.get("date") or str(date.today())
+    notes = payload.get("notes") or payload.get("description") or ""
+    entry_type = payload.get("type", "Expense")
+
     cursor.execute(
         """
-        SELECT e.id, e.title, CAST(e.amount AS FLOAT) as amount, e.category, 
-               DATE_FORMAT(e.date, '%Y-%m-%d') as date, e.notes 
-        FROM expenses e
-        LEFT JOIN users u ON e.user_id = u.id
-        WHERE u.username = %s
-        ORDER BY e.date DESC
+        INSERT INTO expenses (user_id, title, amount, category, date, notes, type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (username,)
+        (user_id, title, amount, category, entry_date, notes, entry_type)
     )
-    expenses = cursor.fetchall()
+    conn.commit()
+    entry_id = cursor.lastrowid
     cursor.close()
     conn.close()
-    return expenses
 
+    return {
+        "id": entry_id,
+        "title": title,
+        "amount": amount,
+        "category": category,
+        "date": str(entry_date),
+        "notes": notes,
+        "type": entry_type
+    }
+
+# Budgets Endpoints
 @app.get("/budgets/{username}")
 def get_user_budgets(username: str):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT b.category, CAST(b.monthly_limit AS FLOAT) as monthly_limit
+        SELECT b.category, CAST(b.monthly_limit AS FLOAT) AS monthly_limit
         FROM budgets b
         JOIN users u ON b.user_id = u.id
         WHERE u.username = %s
@@ -420,6 +447,7 @@ def save_user_budget(username: str, payload: dict):
     conn.close()
     return {"message": "Budget saved successfully"}
 
+# Investments Endpoints
 @app.get("/investments/{username}")
 def get_user_investments(username: str):
     return []
@@ -428,50 +456,10 @@ def get_user_investments(username: str):
 def save_user_investment(username: str, payload: dict):
     return {"message": "Investment saved successfully"}
 
-# General Expense Endpoints
-@app.get("/expenses")
-def list_expenses():
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        """
-        SELECT id, title, CAST(amount AS FLOAT) as amount, category, 
-               DATE_FORMAT(date, '%Y-%m-%d') as date, notes 
-        FROM expenses ORDER BY date DESC
-        """
-    )
-    expenses = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return expenses
-
-@app.post("/expenses", status_code=status.HTTP_201_CREATED)
-def create_expense(expense: ExpenseCreate):
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    user_id = None
-    if expense.username:
-        cursor.execute("SELECT id FROM users WHERE username = %s", (expense.username,))
-        user = cursor.fetchone()
-        if user:
-            user_id = user["id"]
-
-    cursor.execute(
-        "INSERT INTO expenses (user_id, title, amount, category, date, notes) VALUES (%s, %s, %s, %s, %s, %s)",
-        (user_id, expense.title, expense.amount, expense.category, expense.date, expense.notes)
-    )
-    conn.commit()
-    expense_id = cursor.lastrowid
-    cursor.close()
-    conn.close()
-    return {
-        "id": expense_id,
-        "title": expense.title,
-        "amount": expense.amount,
-        "category": expense.category,
-        "date": str(expense.date),
-        "notes": expense.notes
-    }
+# Expenses Compatibility Endpoints
+@app.get("/expenses/{username}")
+def get_user_expenses(username: str):
+    return get_user_entries(username)
 
 @app.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_expense(expense_id: int):
