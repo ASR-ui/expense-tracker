@@ -18,11 +18,6 @@ from fastapi.responses import PlainTextResponse
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from pydantic import BaseModel
 
-# Configure Gemini AI
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY.strip())
-
 # Aiven MySQL Connection Pool Configuration
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = int(os.getenv("DB_PORT", 18832))
@@ -625,17 +620,20 @@ def export_csv(username: str):
         headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
     )
 
-# Gemini Receipt Scanner (Uses PIL.Image for native SDK compatibility)
+# Gemini Receipt Scanner
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
-    key = os.getenv("GEMINI_API_KEY")
-    if not key:
+    raw_key = os.getenv("GEMINI_API_KEY", "")
+    clean_key = raw_key.strip().strip('"').strip("'")
+    
+    if not clean_key:
         raise HTTPException(
             status_code=500,
-            detail="GEMINI_API_KEY environment variable is not configured in Render."
+            detail="GEMINI_API_KEY environment variable is missing on Render."
         )
 
     try:
+        genai.configure(api_key=clean_key)
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
 
