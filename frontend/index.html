@@ -840,23 +840,35 @@
   });
 
   $('forgotPasswordBtn').addEventListener('click', async () => {
-    const email = prompt("Enter your registered email address to receive a password reset link:");
-    if (!email) return;
+    const uname = $('login-user').value.trim();
+    if (!uname) {
+      alert("Please enter your Username above first, then click Forgot Password.");
+      $('login-user').focus();
+      return;
+    }
+
+    const btn = $('forgotPasswordBtn');
+    const originalText = btn.textContent;
+    btn.textContent = "Sending link...";
+    btn.disabled = true;
 
     try {
       const res = await fetch(`${API_URL}/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() })
+        body: JSON.stringify({ username: uname })
       });
       const data = await res.json();
       if (res.ok) {
-        alert("Success! A password reset link has been emailed to you.");
+        alert("A password reset link has been sent directly to the email registered with this username!");
       } else {
-        alert("Error: " + (data.detail || "Email address not found."));
+        alert(data.detail || "Account not found.");
       }
     } catch (err) {
       alert("Server connection failed.");
+    } finally {
+      btn.textContent = originalText;
+      btn.disabled = false;
     }
   });
 

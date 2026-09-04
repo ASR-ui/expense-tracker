@@ -233,7 +233,8 @@ class UserLogin(BaseModel):
     password: str
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    username: Optional[str] = None
+    email: Optional[str] = None
 
 class ResetPasswordRequest(BaseModel):
     token: str
@@ -313,25 +314,37 @@ def delete_account(username: str):
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id FROM users WHERE email = %s", (payload.email,))
-    user = cursor.fetchone()
-    if not user:
+    
+    if payload.username:
+        cursor.execute("SELECT id, email FROM users WHERE username = %s", (payload.username.strip(),))
+    elif payload.email:
+        cursor.execute("SELECT id, email FROM users WHERE email = %s", (payload.email.strip(),))
+    else:
         cursor.close()
         conn.close()
-        return {"message": "If that email is registered, a password reset link has been sent."}
+        raise HTTPException(status_code=400, detail="Please provide a username or email.")
+        
+    user = cursor.fetchone()
     
+    if not user or not user.get("email"):
+        cursor.close()
+        conn.close()
+        return {"message": "If that account exists, a reset link has been dispatched."}
+    
+    user_email = user["email"]
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=15)
+    
     cursor.execute(
         "INSERT INTO password_resets (email, token, expires_at) VALUES (%s, %s, %s)",
-        (payload.email, token, expires_at)
+        (user_email, token, expires_at)
     )
     conn.commit()
     cursor.close()
     conn.close()
     
-    background_tasks.add_task(send_reset_email, payload.email, token)
-    return {"message": "If that email is registered, a password reset link has been sent."}
+    background_tasks.add_task(send_reset_email, user_email, token)
+    return {"message": "Reset link sent directly to your registered email address."}
 
 @app.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest):
@@ -578,7 +591,7 @@ def export_csv(username: str):
         headers={"Content-Disposition": f'attachment; filename="ledger_{username}.csv"'}
     )
 
-# Gemini Receipt Scanner Endpoint (REST integration)
+# Gemini Receipt Scanner Endpoint
 @app.post("/scan-receipt/{username}")
 async def scan_receipt(username: str, file: UploadFile = File(...)):
     raw_key = os.getenv("GEMINI_API_KEY", "")
@@ -643,4 +656,5 @@ async def scan_receipt(username: str, file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Receipt Scan Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI Scan Error: {str(e)}")
