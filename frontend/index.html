@@ -37,7 +37,7 @@
     min-height: 100vh;
   }
 
-  /* ----- ANIMATIONS ----- */
+  /* Animations */
   @keyframes fadeSlideUp {
       from { opacity: 0; transform: translateY(15px); }
       to { opacity: 1; transform: translateY(0); }
@@ -62,7 +62,7 @@
       animation: fadeSlideUp 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
   }
 
-  /* ---------------- Auth screen ---------------- */
+  /* Auth screen */
   .auth-screen{ min-height: 100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
   .auth-card{
     width:100%; max-width:400px; background:var(--card-bg); border:1px solid var(--rule);
@@ -98,9 +98,8 @@
   .auth-submit:hover{ background:var(--green); transform: translateY(-1px); }
   .auth-note{ margin-top:18px; font-size:11px; color:var(--ink-soft); line-height:1.5; }
 
-  /* ---------------- App shell ---------------- */
+  /* App shell */
   .shell{ max-width:1080px; margin:0 auto; padding:20px 20px 80px; }
-
   .topbar{
     display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;
     padding-bottom:16px; border-bottom:1px solid var(--rule);
@@ -131,7 +130,6 @@
 
   /* generic panel */
   .panel{ background:var(--card-bg); border:1px solid var(--rule); border-radius:4px; padding:18px; }
-  .panel-dark{ background:var(--green-deep); border-radius:4px; padding:22px; color:var(--card-bg); }
 
   /* dashboard cards */
   .card-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-top:22px; }
@@ -222,7 +220,7 @@
   .suggest-item p{ font-family:var(--font-body); font-size:12px; color:var(--ink-soft); line-height:1.5; margin:0; }
   .suggest-foot{ font-family:var(--font-mono); font-size:10px; color:rgba(74,81,66,.7); margin-top:14px; }
 
-  /* ----- 3D CSS BAR CHART ----- */
+  /* 3D CSS Bar Chart */
   .chart-3d-container { 
       display: flex; align-items: flex-end; justify-content: center; gap: 80px; 
       height: 150px; margin: 15px 0 35px; padding-bottom: 20px; 
@@ -368,7 +366,6 @@
       <div class="auth-error" id="signupError"></div>
       <button type="submit" class="auth-submit">Create Account</button>
     </form>
-
     <p class="auth-note">Accounts are securely managed by your backend database now.</p>
   </div>
 </div>
@@ -404,7 +401,7 @@
 <div id="appScreen" hidden>
 <div class="shell">
 
-  <!-- Global Feature Paywall Modal -->
+  <!-- Pro Paywall Modal -->
   <div id="globalPaywallModal" hidden style="position:fixed; inset:0; background:rgba(34,40,31,0.85); display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; z-index:1000; padding:20px;">
       <div class="panel" style="max-width:400px; width:100%; border:2px solid var(--brass);">
           <h3 style="font-family:var(--font-display); color:var(--green-deep); margin:0 0 8px; font-size:22px;">🔒 Pro Feature Locked</h3>
@@ -477,7 +474,7 @@
       </div>
     </div>
 
-    <!-- Hidden Budget Modal / Form Panel -->
+    <!-- Budget Modal -->
     <div id="budgetModal" hidden style="position:fixed; inset:0; background:transparent; display:flex; align-items:center; justify-content:center; z-index:100; padding:16px;">
       <div class="panel" style="width:100%; max-width:380px; background:var(--card-bg); border:1px solid var(--rule-strong); border-radius:4px; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.15);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -621,7 +618,7 @@
       <!-- Boost Savings 3D Chart -->
       <div id="boostSavingsContainer" style="margin-top: 10px;"></div>
 
-      <!-- Wrapper for overlay -->
+      <!-- Locked Payment Overlay -->
       <div style="position:relative; min-height: 150px; margin-top: 16px;">
         <div class="suggest-list" id="suggestList" style="margin-top: 0;">
           <div class="suggest-item">
@@ -629,7 +626,6 @@
           </div>
         </div>
         
-        <!-- Locked Payment Overlay -->
         <div id="paywallOverlay" hidden style="position:absolute; inset:-10px; background:rgba(244,238,224,0.90); display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; border-radius:3px; z-index:10; padding:20px;">
             <h4 style="font-family:var(--font-display); color:var(--green-deep); margin:0 0 8px; font-size:18px;">Unlock AI Insights</h4>
             <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px;">Scan the QR code to upgrade to Premium (₹99). Unlocks automatically once payment is verified.</p>
@@ -766,7 +762,7 @@
 
 <script>
 (function(){
- const API_URL = "https://expense-tracker-er5c.onrender.com";
+  const API_URL = "https://expense-tracker-er5c.onrender.com";
   const SESSION_KEY = 'tracker:session';
 
   const EXPENSE_CATS = ['Food','Transport','Housing','Utilities','Health','Shopping','Entertainment','Other'];
@@ -796,7 +792,6 @@
   const whoAmI = $('whoAmI');
   const logoutBtn = $('logoutBtn');
 
-  // Check URL query parameters for reset token
   const urlParams = new URLSearchParams(window.location.search);
   const resetToken = urlParams.get('token');
   if (resetToken) {
@@ -804,7 +799,6 @@
       if(resetScreen) resetScreen.hidden = false;
   }
 
-  // Handle password reset submission
   const resetForm = $('resetForm');
   if(resetForm) {
       resetForm.addEventListener('submit', async (e) => {
@@ -827,7 +821,7 @@
               const data = await res.json();
               if(res.ok) {
                   alert("Password successfully reset! Please log in with your new credentials.");
-                  window.location.href = window.location.pathname; // Remove token query string
+                  window.location.href = window.location.pathname;
               } else {
                   errEl.textContent = data.detail || 'Failed to reset password.';
               }
@@ -897,7 +891,6 @@
     }
   });
 
-  // Forgot Password Trigger Handler
   $('forgotPasswordBtn').addEventListener('click', async () => {
     const email = prompt("Enter your registered email address to receive a password reset link:");
     if (!email) return;
@@ -969,7 +962,6 @@
     showLogin();
   });
 
-  // Delete Account Handler
   $('deleteAccountBtn').addEventListener('click', async () => {
     const confirmed = confirm("Are you sure you want to delete your account? This action is permanent and will erase all your entries, budgets, and investments.");
     if (!confirmed) return;
@@ -1062,7 +1054,6 @@
       return false;
   }
 
-  // --- Manual UPI Verification Trigger ---
   async function handleUpiVerification() {
       try {
           const res = await fetch(`${API_URL}/verify-upi-payment`, {
@@ -1088,7 +1079,6 @@
       el.addEventListener('click', handleUpiVerification);
   });
 
-  // --- 3D Boost Savings Chart Logic ---
   function renderBoostChart() {
     const t = totals();
     const container = $('boostSavingsContainer');
@@ -1133,7 +1123,6 @@
     }, 100);
   }
 
-  // --- AI Insights and Payment Status Check ---
   async function loadAIInsights() {
     const list = document.getElementById('suggestList');
     const paywall = document.getElementById('paywallOverlay');
@@ -1364,7 +1353,6 @@
       }).join('');
     }
   }
-
 
   /* ---------------- CATEGORY <-> TYPE ---------------- */
   const fType = $('f-type');
@@ -1632,7 +1620,7 @@
     $('trendChart').innerHTML = svgMonthlyBars(months, byMonth);
   }
 
-  // --- AI Receipt Scanner Logic ---
+  /* ---------------- AI RECEIPT SCANNER ---------------- */
   const scanBtn = $('scanBtn');
   const receiptInput = $('receiptInput');
 
@@ -1698,7 +1686,7 @@
     });
   }
 
-  // --- CSV Export Logic ---
+  /* ---------------- CSV EXPORT ---------------- */
   const exportBtn = $('exportBtn');
   if(exportBtn) {
       exportBtn.addEventListener('click', async () => {
